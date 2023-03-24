@@ -1,0 +1,780 @@
+---
+title: "Sports Analytics Final Project: Predicting the Market Value of Soccer Players"
+author: "Nagaprasad Rudrapatna"
+date: "11/20/2021"
+output: html_document
+---
+
+Note: Some of the earlier models are commented out to decrease runtime
+
+### Model Summaries
+
+### Best least-squares linear regression model (with log transformation, variable selection - forward selection)
+
+lm(log(Market.Value) ~ Overall.Score +
+                       Age +
+                       Shooting +
+                       Potential.Score +
+                       Goalkeeping +
+                       Defence +
+                       Preferred.Foot + 
+                       Height +
+                       Physical +
+                       Mental +
+                       Weight,
+                       data = train_use)
+                       
+### Best penalized linear regression model 
+
+Ridge penalty applied to best least-squares linear regression model
+
+### Best Gamma GLM (with variable selection - forward selection)
+
+glm(Market.Value ~ Overall.Score +
+                   Age +
+                   Shooting +
+                   Potential.Score +
+                   Goalkeeping +
+                   Defence +
+                   Preferred.Foot +
+                   Mental +
+                   Height +
+                   Weight +
+                   Physical, 
+                   family = Gamma(link = "log"), 
+                   data = train_use)
+                   
+### Best local (LOESS) regression model
+
+loess(log(Market.Value) ~  Shooting + 
+                           Mental +
+                           Age + 
+                           Overall.Score,
+                           span = 0.13,
+                           data = train_use,
+                           degree = 2) 
+                           
+This model has higher test MSE and MAE than the span=0.07 LOESS model; however, it performs better on high-value GKs
+
+### Best GAM (and overall model)
+
+gam(log(Market.Value) ~ lo(Mental, Overall.Score, span = 0.13, degree = 2) +
+                        lo(Shooting, Age, span = 0.13, degree = 2) +
+                        lo(Potential.Score, Overall.Score, span = 0.13, degree = 1) +
+                        lo(Goalkeeping, span = 0.17, degree = 2), data = train_use)
+
+This model has higher test MAE but lower test MSE than the GAM without the Goalkeeping term. However, the difference in test MAE is not very significant. Also, this model performs better on world-class players!
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sjPlot)
+library(glmnet)
+library(gam)
+```
+
+```{r}
+soccer2 <- read.csv("C:\\Users\\naga2\\Documents\\390_Soccer\\Scripts and Data\\All_Player_List.csv") 
+
+# dataset can be obtained here: https://github.com/tanpengshi/Metis_Project_2_FIFA_Players/tree/master/Scripts%20and%20Data
+
+soccer2 <- subset(soccer2, select=-Weekly.Salary) 
+
+soccer2$Preferred.Foot <- ifelse(soccer2$Preferred.Foot == "Right", 1, 0) # recode Preferred.Foot to a dummy variable (1 - right)
+soccer2 <- soccer2 %>%
+  filter(Market.Value > 1000) 
+
+# Presentation images
+
+d1 <- soccer2 %>%
+  select(Player, Age, Market.Value, Overall.Score, Ball.Skills, Defence, Shooting) %>%
+  arrange(desc(Market.Value)) %>%
+  rename("Market Value (in Euros)" = Market.Value, "Overall Score" = Overall.Score, "Ball Skills" = Ball.Skills)
+  
+head(d1)
+tail(d1)
+```
+
+best and worst player based on each feature:
+
+overall score:
+best - Lionel Messi (1)
+worst - Li Xuebo (19382)
+
+potential score:
+best - Kylian MbappÃ© (14)
+worst - Rodrigo HernÃ¡ndez (19237)
+
+market value:
+best - Neymar Jr (3)
+worst - Gary Maley (19019)
+
+height:
+best - Jacob Samnik (16398)
+worst - Hiroto Nakagawa (12137)
+
+weight:
+best - Adebayo Akinfenwa (11541)
+worst - Bandar Al Mutairi (13236)
+
+age:
+best - Hitoshi Sogahata (10330)
+worst - Eduardo Camavinga (1593)
+
+ball skills:
+best - Lionel Messi (1)
+worst - Jairo Farnias (5148)
+
+defence:
+best - Virgil van Dijk (4)
+worst - Ryan Bouallak (17435)
+
+mental:
+best - Marco Verratti (41)
+worst - Matti Kamenz (16502)
+
+passing:
+best - Kevin De Bruyne (6)
+worst - Rodrigo MorÃnigo (16767)
+
+physical:
+best - Sadio ManÃ© (11)
+worst - Leonel Caffaratti (13603)
+
+shooting:
+best - Cristiano Ronaldo (2)
+worst - Kenshin Yoshimaru (15871)
+
+goalkeeping:
+best - Alisson (9)
+worst - Hugo Ayala (1557)
+
+```{r}
+# training-test split
+
+set.seed(55)
+smp_size <- floor(0.7 * nrow(soccer2))
+test_pts <- sample(seq_len(nrow(soccer2)), size = smp_size)
+test_ind <- unique(append(test_pts, c(1, 19382, 14, 19237, 3, 19019, 16398, 12137, 11541, 13236, 10330, 1593, 5158, 4, 17435, 41, 16502, 6, 16767, 11, 13603, 2, 15871, 9, 1557), 1)) # the above-identified players must be in the training set for LOESS regression to function properly
+
+soc_test <- soccer2[-test_ind, ]
+soc_train <- soccer2[test_ind, ]
+
+train_use <- subset(soc_train, select=-Player)
+test_use <- subset(soc_test, select=-Player)
+```
+
+```{r}
+# this function calculates the mean-squared error, root mean-squared, and mean absolute error of a regression function
+
+regress.eval <- function(true.vals, pred.vals){
+  resid <- true.vals - pred.vals
+  mse <- sum(resid^2) / length(true.vals)
+  print(paste("MSE:", mse))
+  rmse <- sqrt(mse)
+  print(paste("RMSE:", rmse))
+  mae <- sum(abs(resid)) / length(true.vals)
+  print(paste("MAE:", mae))
+}
+```
+
+### Least-squares
+
+```{r}
+# full model
+lm.full <- lm(Market.Value ~ ., data = train_use)
+# summary(lm.full)
+
+# baseline model
+lm.base <- lm(Market.Value ~ 1, data = train_use)
+
+# forward selection - does not help!
+lm.for <- step(lm.base,
+               direction="forward",
+               scope=formula(lm.full),
+               trace=0)
+# summary(lm.for)
+
+for.pred1 <- predict.lm(lm.for, test_use)
+
+# backward selection - does not help!
+lm.back <- step(lm.full,
+                direction="backward",
+                scope=formula(lm.full),
+                trace=0)
+# summary(lm.back)
+
+lm.pred1 <- predict.lm(lm.back, test_use)
+
+plot(lm.full) # residual plot indicates exponential trend; also cannot have negative predicted market values -> CONCLUSION: log-transform response
+```
+
+```{r}
+lm.log.full <- lm(log(Market.Value) ~ ., data = train_use)
+# summary(lm.log.full)
+
+lm.log.base <- lm(log(Market.Value) ~ 1, data = train_use)
+
+# plot(lm.log.full)
+
+# forward selection - best
+lm.log.for <- step(lm.log.base,
+                   direction="forward",
+                   scope=formula(lm.log.full),
+                   trace=0)
+summary(lm.log.for)
+plot(lm.log.for)
+
+best_linear <- predict.lm(lm.log.for, test_use, se = T)
+e.lin.fit <- exp(best_linear$fit)
+e.lin.se <- exp(best_linear$se.fit)
+e.lin.l2 <- e.lin.fit - 1.96*e.lin.se
+e.lin.u2 <- e.lin.fit + 1.96*e.lin.se
+
+regress.eval(test_use$Market.Value, e.lin.fit)
+test.lm.log.for <- cbind(soc_test, e.lin.fit, e.lin.l2, e.lin.u2)
+test.lm.log.for <- test.lm.log.for %>%
+  select(Player, Overall.Score, Market.Value, e.lin.fit, e.lin.l2, e.lin.u2) %>%
+  rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = e.lin.fit, "95% Lower Prediction Bound" = e.lin.l2, "95% Upper Prediction Bound" = e.lin.u2)
+
+# backward selection 
+lm.log.back <- step(lm.log.full,
+                    direction="backward",
+                    scope=formula(lm.log.full),
+                    trace=0)
+# summary(lm.log.back)
+# plot(lm.log.back)
+
+lm.pred2 <- exp(predict.lm(lm.log.back, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, lm.pred1)
+regress.eval(test_use$Market.Value, lm.pred2)
+regress.eval(test_use$Market.Value, for.pred1)
+
+# Outputting Predictions on Test Set
+
+# test.lm.back <- cbind(soc_test, lm.pred1)
+# test.lm.back <- test.lm.back %>%
+#   select(Player, Overall.Score, Market.Value, lm.pred1)
+# 
+# test.lm.log.back <- cbind(soc_test, lm.pred2)
+# test.lm.log.back <- test.lm.log.back %>%
+#   select(Player, Overall.Score, Market.Value, lm.pred2)
+# 
+# test.lm.for <- cbind(soc_test, for.pred1)
+# test.lm.for <- test.lm.for %>%
+#   select(Player, Overall.Score, Market.Value, for.pred1)
+```
+
+lm.log.for is best
+
+```{r}
+# Correlation heatmap
+
+cMatrix <- cor(soccer2[, -1])
+sjp.corr(cMatrix)
+
+# 5 most highly correlated predictors with Market Value: Shooting, Passing, Mental, Potential Score, Overall Score
+```
+
+```{r}
+# Correlation-based modeling
+
+# exclude attributes that are barely correlated with Market.Value (correlation < |0.05|) 
+# keep goalkeeping since we know goalkeepers are valued differently
+# remove Preferred.Foot, Height
+
+lm.log.corr <- lm(log(Market.Value) ~ . - Preferred.Foot - Height, data = train_use)
+
+# backward selection
+lm.log.corr.back <- step(lm.log.corr,
+                         direction="backward",
+                         scope=formula(lm.log.corr),
+                         trace=0)
+# summary(lm.log.corr.back) 
+# plot(lm.log.corr.back)
+
+lm.pred3 <- exp(predict.lm(lm.log.corr.back, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, lm.pred2)
+regress.eval(test_use$Market.Value, lm.pred3)
+
+# test.lm.log.corr.back <- cbind(soc_test, lm.pred3)
+# test.lm.log.corr.back <- test.lm.log.corr.back %>%
+#   select(Player, Overall.Score, Market.Value, lm.pred3)
+```
+
+lm.log.back > lm.log.corr.back
+
+```{r}
+# Trying interaction effects
+
+lm.log.inter <- lm(log(Market.Value) ~ .*., data = train_use)
+
+# forward selection
+lm.log.inter.for <- step(lm.log.base,
+                         direction="forward",
+                         scope=formula(lm.log.inter),
+                         trace=0)
+# summary(lm.log.inter.for)
+# plot(lm.log.inter.for)
+
+for.pred3 <- exp(predict.lm(lm.log.inter.for, test_use))
+
+# backward selection
+lm.log.inter.back <- step(lm.log.inter,
+                          direction="backward",
+                          scope=formula(lm.log.inter),
+                          trace=0)
+# summary(lm.log.inter.back)
+# plot(lm.log.inter.back)
+
+lm.pred4 <- exp(predict.lm(lm.log.inter.back, test_use))
+
+lm.log.inter.custom <- lm(log(Market.Value) ~ Overall.Score + Potential.Score + 
+    Height + Weight + Age + Ball.Skills + Defence + Physical +
+    Mental + Passing + Shooting + Goalkeeping + Overall.Score:Potential.Score + 
+    Overall.Score:Height + Overall.Score:Weight + Overall.Score:Age + 
+    Overall.Score:Ball.Skills + Overall.Score:Defence + Overall.Score:Mental + 
+    Overall.Score:Physical + Overall.Score:Shooting + Overall.Score:Goalkeeping + 
+    Potential.Score:Height + Potential.Score:Weight + Potential.Score:Age + 
+    Potential.Score:Ball.Skills + Potential.Score:Mental + 
+    Potential.Score:Physical + Potential.Score:Shooting + Potential.Score:Goalkeeping + Height:Weight + Height:Age + Height:Passing + Height:Goalkeeping + Weight:Age +  
+    Weight:Defence +
+    Age:Ball.Skills + Age:Defence + Age:Mental + 
+    Age:Physical + Age:Shooting + Age:Goalkeeping + 
+    Ball.Skills:Shooting + Defence:Passing + Defence:Goalkeeping + 
+    Mental:Passing + Mental:Physical + Mental:Shooting + Passing:Physical + 
+    Physical:Goalkeeping + Shooting:Goalkeeping, data = train_use)
+
+custom.pred <- exp(predict.lm(lm.log.inter.custom, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, lm.pred2)
+regress.eval(test_use$Market.Value, lm.pred4)
+regress.eval(test_use$Market.Value, for.pred3)
+regress.eval(test_use$Market.Value, custom.pred)
+```
+
+lm.log.for > lm.log.back > lm.log.inter.custom > lm.log.inter.back > lm.log.inter.for
+
+Adding interaction effects seems to result in too much model complexity (poor performance on test set due to overfitting)
+
+### Regularization 
+
+```{r}
+x.train <- model.matrix(log(Market.Value) ~ Overall.Score +
+                       Age +
+                       Shooting +
+                       Potential.Score +
+                       Goalkeeping +
+                       Defence +
+                       Preferred.Foot + 
+                       Height +
+                       Physical +
+                       Mental +
+                       Weight, train_use)[,-1]
+y.train <- log(train_use$Market.Value) 
+x.test <- model.matrix(log(Market.Value) ~ Overall.Score +
+                       Age +
+                       Shooting +
+                       Potential.Score +
+                       Goalkeeping +
+                       Defence +
+                       Preferred.Foot + 
+                       Height +
+                       Physical +
+                       Mental +
+                       Weight, test_use)[,-1]
+y.test <- log(test_use$Market.Value)
+
+x.train2 <- model.matrix(log(Market.Value) ~ .*., train_use)[,-1]
+x.test2 <- model.matrix(log(Market.Value) ~ .*., test_use)[,-1]
+
+# Ridge regression (lambda chosen by 10-fold CV)
+set.seed(55)
+cv.out.r <- cv.glmnet(x.train, y.train, alpha = 0)
+bestlam.r <- cv.out.r$lambda.min
+ridge.fit <- glmnet(x.train, y.train, alpha = 0, lambda = bestlam.r)
+ridge.pr <- predict(ridge.fit, s = bestlam.r, newx = x.test, type = "response")
+e.ridge <- exp(ridge.pr)
+
+regress.eval(y.test, e.ridge)
+
+test.ridge <- cbind(soc_test, e.ridge)
+test.ridge <- test.ridge %>%
+  select(Player, Overall.Score, Market.Value, s1) %>%
+  rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = s1)
+
+# LASSO (lambda chosen by 10-fold CV)
+
+# Forward selection model
+set.seed(55)
+cv.out.l <- cv.glmnet(x.train, y.train, alpha = 1)
+bestlam.l <- cv.out.l$lambda.min
+lasso.fit <- glmnet(x.train, y.train, alpha = 1, lambda = bestlam.l)
+lasso.pr <- predict(lasso.fit, s = bestlam.l, newx = x.test, type = "response")
+e.lasso <- exp(lasso.pr)
+
+regress.eval(y.test, e.lasso)
+
+# test.lasso <- cbind(soc_test, e.lasso)
+# test.lasso <- test.lasso %>%
+#   select(Player, Overall.Score, Market.Value, s1) %>%
+#   rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = s1)
+
+# Full model
+set.seed(55)
+cv.out.l2 <- cv.glmnet(x.train2, y.train, alpha = 1)
+bestlam.l2 <- cv.out.l2$lambda.min
+lasso2.fit <- glmnet(x.train2, y.train, alpha = 1, lambda = bestlam.l2)
+lasso2.pr <- predict(lasso2.fit, s = bestlam.l2, newx = x.test2, type = "response")
+e.lasso2 <- exp(lasso2.pr)
+
+regress.eval(y.test, e.lasso2)
+
+# test.lasso2 <- cbind(soc_test, e.lasso2)
+# test.lasso2 <- test.lasso2 %>%
+#   select(Player, Overall.Score, Market.Value, s1) %>%
+#   rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = s1)
+```
+
+LOESS (log-transformed) > LS (log-transformed, forward) > ridge (log-transformed, forward) > LASSO (log-transformed, forward) > LASSO (log-transformed, full)
+
+### LOESS Regression
+
+```{r}
+local.fit1 <- loess(log(Market.Value) ~ Shooting + Mental + Potential.Score + Overall.Score, span = 0.2, data = train_use, degree = 1)
+local.fit2 <- loess(log(Market.Value) ~ Passing + Mental + Potential.Score + Overall.Score, span = 0.2, data = train_use, degree = 1)
+
+local.pred1 <- exp(predict(local.fit1, test_use))
+local.pred2 <- exp(predict(local.fit2, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, local.pred1)
+regress.eval(test_use$Market.Value, local.pred2)
+
+# test.local1 <- cbind(soc_test, local.pred1)
+# test.local1 <- test.local1 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred1)
+# 
+# test.local2 <- cbind(soc_test, local.pred2)
+# test.local2 <- test.local2 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred2)
+```
+
+local2 > local1
+
+```{r warning=F}
+local.fit3 <- loess(log(Market.Value) ~ Passing + Mental + Potential.Score + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred3 <- exp(predict(local.fit3, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, local.pred3)
+
+# test.local3 <- cbind(soc_test, local.pred3)
+# test.local3 <- test.local3 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred3)
+```
+
+local3 > local2
+
+```{r warning=F}
+local.fit4 <- loess(log(Market.Value) ~ Shooting + Mental + Potential.Score + Overall.Score, span = 0.1, data = train_use, degree = 2)
+local.fit5 <- loess(log(Market.Value) ~ Shooting + Mental + Potential.Score + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred4 <- exp(predict(local.fit4, test_use))
+local.pred5 <- exp(predict(local.fit5, test_use))
+
+regress.eval(test_use$Market.Value, local.pred4)
+regress.eval(test_use$Market.Value, local.pred5)
+
+# test.local4 <- cbind(soc_test, local.pred4)
+# test.local4 <- test.local4 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred4)
+# 
+# test.local5 <- cbind(soc_test, local.pred5)
+# test.local5 <- test.local5 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred5)
+```
+
+local5 > local4
+local3 > local5
+
+```{r}
+local.fit6 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred6 <- exp(predict(local.fit6, test_use))
+
+regress.eval(test_use$Market.Value, local.pred6)
+
+# test.local6 <- cbind(soc_test, local.pred6)
+# test.local6 <- test.local6 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred6)
+```
+
+local6 > local3
+
+```{r}
+local.fit7 <- loess(log(Market.Value) ~ Shooting + Goalkeeping + Age + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred7 <- exp(predict(local.fit7, test_use))
+
+regress.eval(test_use$Market.Value, local.pred7)
+
+# test.local7 <- cbind(soc_test, local.pred7)
+# test.local7 <- test.local7 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred7)
+```
+
+local6 > local7
+
+```{r}
+local.fit8 <- loess(log(Market.Value) ~ Shooting + Ball.Skills + Age + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred8 <- exp(predict(local.fit8, test_use))
+
+regress.eval(test_use$Market.Value, local.pred8)
+
+# test.local8 <- cbind(soc_test, local.pred8)
+# test.local8 <- test.local8 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred8)
+```
+
+local6 > local8
+
+```{r}
+local.fit9 <- loess(log(Market.Value) ~ Shooting + Passing + Age + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred9 <- exp(predict(local.fit9, test_use))
+
+regress.eval(test_use$Market.Value, local.pred9)
+
+# test.local9 <- cbind(soc_test, local.pred9)
+# test.local9 <- test.local9 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred9)
+```
+
+local6 > local9
+
+```{r}
+local.fit10 <- loess(log(Market.Value) ~ Shooting + Defence + Age + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred10 <- exp(predict(local.fit10, test_use))
+
+regress.eval(test_use$Market.Value, local.pred10)
+
+# test.local10 <- cbind(soc_test, local.pred10)
+# test.local10 <- test.local10 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred10)
+```
+
+local6 > local10
+
+```{r}
+local.fit11 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.2, data = train_use, degree = 1)
+
+local.pred11 <- exp(predict(local.fit11, test_use))
+
+regress.eval(test_use$Market.Value, local.pred11)
+
+# test.local11 <- cbind(soc_test, local.pred11)
+# test.local11 <- test.local11 %>%
+#   select(Player, Overall.Score, Market.Value, local.pred11)
+```
+
+local6 > local11
+
+```{r}
+local.fit12 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.13, data = train_use, degree = 2) # has higher test MSE, MAE than span=0.07 model but does better on high-value goalkeepers
+
+best_lo <- predict(local.fit12, test_use, se = T)
+e.lo.fit <- exp(best_lo$fit)
+e.lo.se <- exp(best_lo$se.fit)
+e.lo.l2 <- e.lo.fit - 1.96*e.lo.se
+e.lo.u2 <- e.lo.fit + 1.96*e.lo.se
+
+regress.eval(test_use$Market.Value, e.lo.fit)
+test.local <- cbind(soc_test, e.lo.fit, e.lo.l2, e.lo.u2)
+test.local <- test.local %>%
+  select(Player, Overall.Score, Market.Value, e.lo.fit, e.lo.l2, e.lo.u2) %>%
+  rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = e.lo.fit, "95% Lower Prediction Bound" = e.lo.l2, "95% Upper Prediction Bound" = e.lo.u2)
+```
+
+local12 > local6
+
+Here, we have performed local (quadratic) regression using a span of 0.13; that is, each neighborhood consists of 13% of the training observations. The larger the span, the smoother the fit.
+
+span=0.07, d=1: 527...
+span=0.12, d=2: 5267...
+span=0.13, d=2: 5247...
+span=0.07, d=2: 5087...
+
+```{r}
+local.fit13 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.07, data = train_use, degree = 2)
+
+local.pred13 <- exp(predict(local.fit13, test_use))
+
+regress.eval(test_use$Market.Value, local.pred13)
+
+test.local13 <- cbind(soc_test, local.pred13)
+test.local13 <- test.local13 %>%
+  select(Player, Overall.Score, Market.Value, local.pred13)
+```
+
+local13 > local12 on the basis of test MSE, MAE
+
+### Generalized Linear Models (Gamma regression)
+
+```{r warning=F}
+# Gamma regression: market values are strictly positive and continuous
+
+gamma.full <- glm(Market.Value ~ ., family = Gamma(link = "log"), data = train_use)
+
+gamma.base <- glm(Market.Value ~ 1, family = Gamma(link = "log"), data = train_use)
+
+# forward selection
+gamma.for <- step(gamma.base,
+                  direction="forward",
+                  scope=formula(gamma.full),
+                  trace=0)
+# summary(gamma.for)
+# plot(gamma.for)
+
+gamma.for.pr <- predict(gamma.for, test_use, type = "response", se.fit = T)
+gfor.l2 <- gamma.for.pr$fit - 1.96*gamma.for.pr$se.fit
+gfor.u2 <- gamma.for.pr$fit + 1.96*gamma.for.pr$se.fit
+
+regress.eval(test_use$Market.Value, gamma.for.pr$fit)
+test.gamma.for <- cbind(soc_test, gamma.for.pr$fit, gfor.l2, gfor.u2)
+test.gamma.for <- test.gamma.for %>%
+  select(Player, Overall.Score, Market.Value, `gamma.for.pr$fit`, gfor.l2, gfor.u2) %>%
+  rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = `gamma.for.pr$fit`, "95% Lower Prediction Bound" = gfor.l2, "95% Upper Prediction Bound" = gfor.u2)
+
+# backward selection 
+gamma.back <- step(gamma.full,
+                   direction="backward",
+                   scope=formula(gamma.full),
+                   trace=0)
+# summary(gamma.back)
+# plot(gamma.back)
+
+gamma.back.pr <- predict(gamma.back, test_use, type = "response", se.fit = T)
+gback.l2 <- gamma.back.pr$fit - 1.96*gamma.back.pr$se.fit
+gback.u2 <- gamma.back.pr$fit + 1.96*gamma.back.pr$se.fit
+regress.eval(test_use$Market.Value, gamma.back.pr$fit)
+
+# test.gamma.back <- cbind(soc_test, gamma.back.pr$fit, gback.l2, gback.u2)
+# test.gamma.back <- test.gamma.back %>%
+#   select(Player, Overall.Score, Market.Value, `gamma.back.pr$fit`, gback.l2, gback.u2) %>%
+#   rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = `gamma.back.pr$fit`, "95% Lower Prediction Bound" = gback.l2, "95% Upper Prediction Bound" = gback.u2)
+```
+LOESS > gamma.for.pr > gamma.back.pr
+
+### Generalized Additive Models
+
+```{r warning=F}
+# gam.fit1 <- gam(log(Market.Value) ~ lo(Shooting, Overall.Score, span = 0.13, degree = 2) + lo(Mental, Overall.Score, span = 0.13, degree = 2) + lo(Shooting, Age, span = 0.13, degree = 2), data = train_use) # best: span = 0.13
+# gam.fit1.pr <- exp(predict(gam.fit1, newdata = test_use))
+# 
+# regress.eval(test_use$Market.Value, gam.fit1.pr)
+
+gam.fit2 <- gam(log(Market.Value) ~ lo(Mental, Overall.Score, span = 0.13, degree = 2) + lo(Shooting, Age, span = 0.13, degree = 2) + lo(Potential.Score, Overall.Score, span = 0.13, degree = 1), data = train_use)
+gam.fit2.pr <- exp(predict(gam.fit2, newdata = test_use))
+
+regress.eval(test_use$Market.Value, gam.fit2.pr)
+
+# gam.fit3 <- gam(log(Market.Value) ~ lo(Mental, Overall.Score, span = 0.13, degree = 2) + lo(Shooting, Age, span = 0.13, degree = 2) + lo(Potential.Score, Overall.Score, span = 0.13, degree = 1) + lo(Goalkeeping, span = 0.13, degree = 2), data = train_use) # slightly improves on high-value GKs compared to gam.fit2
+# gam.fit3.pr <- exp(predict(gam.fit3, newdata = test_use))
+# 
+# regress.eval(test_use$Market.Value, gam.fit3.pr)
+
+gam.fit4 <- gam(log(Market.Value) ~ lo(Mental, Overall.Score, span = 0.13, degree = 2) + lo(Shooting, Age, span = 0.13, degree = 2) + lo(Potential.Score, Overall.Score, span = 0.13, degree = 1) + lo(Goalkeeping, span = 0.17, degree = 2), data = train_use) 
+gam.fit4.pr <- exp(predict(gam.fit4, newdata = test_use))
+
+regress.eval(test_use$Market.Value, gam.fit4.pr)
+
+anova(gam.fit4) # confirms that predictors have nonlinear relationship with response
+
+# test.gam1 <- cbind(soc_test, gam.fit1.pr)
+# test.gam1 <- test.gam1 %>%
+#   select(Player, Overall.Score, Market.Value, gam.fit1.pr) %>%
+#   rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = gam.fit1.pr)
+
+# test.gam2 <- cbind(soc_test, gam.fit2.pr)
+# test.gam2 <- test.gam2 %>%
+#   select(Player, Overall.Score, Market.Value, gam.fit2.pr) %>%
+#   rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = gam.fit2.pr)
+
+# test.gam3 <- cbind(soc_test, gam.fit3.pr)
+# test.gam3 <- test.gam3 %>%
+#   select(Player, Overall.Score, Market.Value, gam.fit3.pr) %>%
+#   rename("Overall Score" = Overall.Score, "Market Value (in Euros)" = Market.Value, "Predicted Market Value" = gam.fit3.pr)
+
+test.gam4 <- cbind(soc_test, gam.fit4.pr)
+test.gam4 <- test.gam4 %>%
+  arrange(desc(Market.Value)) %>%
+  select(Player, Age, Market.Value, gam.fit4.pr, Overall.Score, Potential.Score, Shooting, Goalkeeping) %>%
+  rename("Overall Score" = Overall.Score, "Potential Score" = Potential.Score, "True Market Value (in Euros)" = Market.Value, "Predicted Market Value (in Euros)" = gam.fit4.pr)
+
+# Presentation image
+
+head(test.gam4)
+tail(test.gam4)
+```
+
+GAM is best type of model 
+
+gam.fit4 > gam.fit3 > gam.fit2 > gam.fit1 > LOESS (by MSE)
+gam.fit2 > gam.fit4 > gam.fit3 > gam.fit1 > LOESS (by MAE)
+
+MSE (GAM4): 206816736362.298
+MAE (GAM2): 139206.206080126 
+
+GAM4 preferred since the priority is to predict well for the highest-value (world-class) players
+
+### Comparison
+
+```{r}
+plot(test.lm.log.for$`Market Value (in Euros)`, test.lm.log.for$`Predicted Market Value`, xlim = c(0, max(test.lm.log.for$`Predicted Market Value`)), main = "Least-squares Regression Predictions", xlab = "True Market Value (in Euros)", ylab = "Predicted Market Value (in Euros)")
+abline(0, 1) # y = x reference line
+
+plot(test.ridge$`Market Value (in Euros)`, test.ridge$`Predicted Market Value`, xlim = c(0, max(test.ridge$`Predicted Market Value`)), main = "Ridge Regression Predictions", xlab = "True Market Value (in Euros)", ylab = "Predicted Market Value (in Euros)")
+abline(0, 1) # y = x reference line
+
+# plot(test.lasso$`Market Value (in Euros)`, test.lasso$`Predicted Market Value`, xlim = c(0, max(test.lasso$`Predicted Market Value`)))
+# abline(0, 1) # y = x reference line
+
+plot(test.gamma.for$`Market Value (in Euros)`, test.gamma.for$`Predicted Market Value`, xlim = c(0, max(test.gamma.for$`Predicted Market Value`)), main = "Gamma Regression Predictions", xlab = "True Market Value (in Euros)", ylab = "Predicted Market Value (in Euros)")
+abline(0, 1) # y = x reference line
+
+plot(test.local$`Market Value (in Euros)`, test.local$`Predicted Market Value`, xlim = c(0, max(test.local$`Predicted Market Value`)), , main = "LOESS Regression Predictions", xlab = "True Market Value (in Euros)", ylab = "Predicted Market Value (in Euros)")
+abline(0, 1) # y = x reference line
+
+# plot(test.gam1$`Market Value (in Euros)`, test.gam1$`Predicted Market Value`, xlim = c(0, max(test.gam1$`Predicted Market Value`)))
+# abline(0, 1) # y = x reference line
+
+# plot(test.gam2$`Market Value (in Euros)`, test.gam2$`Predicted Market Value`, xlim = c(0, max(test.gam2$`Predicted Market Value`)))
+# abline(0, 1) # y = x reference line
+
+# plot(test.gam3$`Market Value (in Euros)`, test.gam3$`Predicted Market Value`, xlim = c(0, max(test.gam3$`Predicted Market Value`)))
+# abline(0, 1) # y = x reference line
+
+plot(test.gam4$`True Market Value (in Euros)`, test.gam4$`Predicted Market Value (in Euros)`, xlim = c(0, max(test.gam4$`Predicted Market Value (in Euros)`)), main = "Generalized Additive Model Predictions", xlab = "True Market Value (in Euros)", ylab = "Predicted Market Value (in Euros)")
+abline(0, 1) # y = x reference line
+```
+
+Least deviation from ideal line with the GAM model predictions
+- for high-value players, LOESS and GAM perform similarly
+- for low and medium-value players, GAM performs better
+
+visually: not too much difference between GAM2 and GAM4
