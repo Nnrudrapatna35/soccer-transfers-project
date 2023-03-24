@@ -1,0 +1,354 @@
+---
+title: "Project"
+author: "Nagaprasad Rudrapatna"
+date: "11/27/2021"
+output: pdf_document
+---
+
+GOAL: Develop a predictive model of the market value of soccer players
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+soccer <- read.csv("C:\\Users\\naga2\\Documents\\390_Soccer\\Scripts and Data\\All_Player_List.csv") # webscrape from FIFA Index
+# summarize various attributes into predictors by averaging
+# Ball Skills: Ball Control, Dribbling
+#Passing: Crossing, Short Pass, Long Pass
+#Defense: Marking, Slide Tackle, Stand Tackle
+#Mental: Aggression, Reactions, Attack Position, Interceptions, Vision, Composure
+#Physical: Acceleration, Stamina, Strength, Balance, Sprint Speed, Agility, Jumping
+#Shooting: Heading, Shot Power, Finishing, Long Shots, Curve, Free Kick Accuracy, Penalties, Volleys
+#Goalkeeping: Positioning, Diving, Handling, Kicking, Reflexes
+
+soccer <- subset(soccer, select=-Weekly.Salary) # remove salary - not a good predictor of market value since salaries are negotiated years before market value dwindles/rises
+soccer$Preferred.Foot <- ifelse(soccer$Preferred.Foot == "Right", 1, 0) # recode Preferred.Foot to a dummy variable (1 - right)
+```
+
+best and worst in each predictor category must be in training set:
+
+overall score:
+best - Lionel Messi (1)
+worst - Li Xuebo (19398)
+
+potential score:
+best - Kylian MbappÃ© (14)
+worst - Simon Royce (19394) if $1000
+
+market value:
+best - Neymar Jr (3)
+worst - Gianluigi Buffon (223) if $1000
+
+height:
+best - Jacob Samnik (16410)
+worst - Hiroto Nakagawa (12145)
+
+weight:
+best - Adebayo Akinfenwa (11549)
+worst - Bandar Al Mutairi (13245)
+
+age:
+best - Simon Royce (19394) if $1000
+worst - Eduardo Camavinga (1595)
+
+ball skills:
+best - Lionel Messi (1)
+worst - Jairo Farnias (5152)
+
+defence:
+best - Virgil van Dijk (4)
+worst - Ryan Bouallak (17449)
+
+mental:
+best - Marco Verratti (41)
+worst - Matti Kamenz (16514)
+
+passing:
+best - Kevin De Bruyne (6)
+worst - Rodrigo MorÃnigo (16780)
+
+physical:
+best - Sadio ManÃ© (11)
+worst - Leonel Caffaratti (13613)
+
+shooting:
+best - Cristiano Ronaldo (2)
+worst - Kenshin Yoshimaru (15883)
+
+goalkeeping:
+best - Alisson (9)
+worst - Hugo Ayala (1559)
+
+```{r}
+set.seed(55) 
+smp_size <- floor(0.7 * nrow(soccer))
+test_pts <- sample(seq_len(nrow(soccer)), size = smp_size)
+test_ind <- unique(append(test_pts, c(1, 19398, 14, 19394, 3, 223, 16410, 12145, 11549, 13245, 1595, 5152, 4, 17449, 41, 16514, 6, 16780, 11, 13613, 2, 15883, 9, 1559), 1))
+
+soc_test <- soccer[-test_ind, ]
+soc_train <- soccer[test_ind, ]
+
+train_use <- subset(soc_train, select=-Player)
+test_use <- subset(soc_test, select=-Player)
+```
+
+```{r}
+# full model
+lm.full <- lm(Market.Value ~ ., data = train_use)
+summary(lm.full)
+
+# backward selection - does not help!
+lm.back <- step(lm.full,
+                direction="backward",
+                scope=formula(lm.full))
+summary(lm.back)
+
+plot(lm.full) # residual plot clearly indicated exponential trend -> log transform response
+
+lm.pred1 <- predict.lm(lm.back, test_use)
+```
+
+```{r}
+lm.log.full <- lm(log(Market.Value) ~ ., data = train_use)
+summary(lm.log.full)
+
+plot(lm.log.full)
+
+# backward selection once more - drops passing
+lm.log.back <- step(lm.log.full,
+                direction="backward",
+                scope=formula(lm.log.full))
+summary(lm.log.back)
+plot(lm.log.back)
+
+lm.pred2 <- exp(predict.lm(lm.log.back, test_use))
+```
+
+```{r}
+regress.eval <- function(true.vals, pred.vals){
+  resid <- true.vals - pred.vals
+  mse <- sum(resid^2) / length(true.vals)
+  print(paste("MSE:", mse))
+  rmse <- sqrt(mse)
+  print(paste("RMSE:", rmse))
+  mae <- sum(abs(resid)) / length(true.vals)
+  print(paste("MAE:", mae))
+}
+```
+
+```{r warning=F, error=F}
+regress.eval(test_use$Market.Value, lm.pred1)
+regress.eval(test_use$Market.Value, lm.pred2)
+
+test.lm.back <- cbind(soc_test, lm.pred1)
+test.lm.back <- test.lm.back %>%
+  select(Player, Overall.Score, Market.Value, lm.pred1)
+
+test.lm.log.back <- cbind(soc_test, lm.pred2)
+test.lm.log.back <- test.lm.log.back %>%
+  select(Player, Overall.Score, Market.Value, lm.pred2)
+```
+
+```{r}
+library(sjPlot)
+# correlation between predictors - exclude those that are barely correlated with Market.Value (< |0.05|; keep goalkeeping since we know goalkeepers are valued differently): Preferred.Foot, Height
+cMatrix <- cor(soccer[, -1])
+sjp.corr(cMatrix)
+# 5 most highly correlated predictors with Market Value:
+# Shooting, Passing, Mental, Potential Score, Overall Score
+```
+```{r}
+lm.log.corr <- lm(log(Market.Value) ~ . - Preferred.Foot - Height, data = train_use)
+summary(lm.log.corr)
+
+plot(lm.log.corr)
+
+# backward selection
+lm.log.corr.back <- step(lm.log.corr,
+                direction="backward",
+                scope=formula(lm.log.corr))
+summary(lm.log.corr.back) # overall score, potential score, age, ball skills, defence, mental, physical, shooting, goalkeeping
+plot(lm.log.corr.back)
+
+lm.pred3 <- exp(predict.lm(lm.log.corr.back, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, lm.pred2)
+regress.eval(test_use$Market.Value, lm.pred3)
+
+test.lm.log.corr.back <- cbind(soc_test, lm.pred3)
+test.lm.log.corr.back <- test.lm.log.corr.back %>%
+  select(Player, Overall.Score, Market.Value, lm.pred3)
+```
+
+# extremes not captured well - don't want something too nonlinear, like a gam
+
+# local regression - limited to 4 predictors
+# Here we have performed local linear regression using spans of 0.3 and 0.8: that is, each neighborhood consists of 30% or 80% of the training observations. The larger the span, the smoother the fit. 
+
+```{r}
+local.fit1 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.1, data = train_use, degree = 1) 
+local.fit2 <- loess(log(Market.Value) ~ Age + Shooting + Defence + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+# predictions
+local.pred1 <- exp(predict(local.fit1, test_use))
+local.pred2 <- exp(predict(local.fit2, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, local.pred1)
+regress.eval(test_use$Market.Value, local.pred2)
+
+test.local1 <- cbind(soc_test, local.pred1)
+test.local1 <- test.local1 %>%
+  select(Player, Overall.Score, Market.Value, local.pred1)
+
+test.local2 <- cbind(soc_test, local.pred2)
+test.local2 <- test.local2 %>%
+  select(Player, Overall.Score, Market.Value, local.pred2)
+```
+
+local1 > local2 > lm_log_corr
+
+```{r}
+local.fit3 <- loess(log(Market.Value) ~ Passing + Mental + Potential.Score + Overall.Score, span = 0.3, data = train_use, degree = 1)
+
+# predictions
+local.pred3 <- exp(predict(local.fit3, test_use))
+```
+
+```{r}
+regress.eval(test_use$Market.Value, local.pred3)
+
+test.local3 <- cbind(soc_test, local.pred3)
+test.local3 <- test.local3 %>%
+  select(Player, Overall.Score, Market.Value, local.pred3)
+
+```
+
+local1 > local3
+
+```{r}
+local.fit4 <- loess(log(Market.Value) ~ Shooting + Mental + Potential.Score + Overall.Score, span = 0.2, data = train_use, degree = 1)
+local.fit5 <- loess(log(Market.Value) ~ Shooting + Mental + Potential.Score + Overall.Score, span = 0.1, data = train_use, degree = 1)
+
+local.pred4 <- exp(predict(local.fit4, test_use))
+local.pred5 <- exp(predict(local.fit5, test_use))
+
+regress.eval(test_use$Market.Value, local.pred4)
+regress.eval(test_use$Market.Value, local.pred5)
+
+test.local4 <- cbind(soc_test, local.pred4)
+test.local4 <- test.local4 %>%
+  select(Player, Overall.Score, Market.Value, local.pred4)
+
+test.local5 <- cbind(soc_test, local.pred5)
+test.local5 <- test.local5 %>%
+  select(Player, Overall.Score, Market.Value, local.pred5)
+
+```
+
+local5 > local4
+
+local1 > local5
+
+```{r}
+local.fit6 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.1, data = train_use, degree = 2) 
+
+local.pred6 <- exp(predict(local.fit6, test_use))
+
+regress.eval(test_use$Market.Value, local.pred6)
+
+test.local6 <- cbind(soc_test, local.pred6)
+test.local6 <- test.local6 %>%
+  select(Player, Overall.Score, Market.Value, local.pred6)
+```
+
+local1 > local6
+
+```{r}
+local.fit7 <- loess(log(Market.Value) ~ Shooting + Goalkeeping + Age + Overall.Score, span = 0.1, data = train_use, degree = 1) 
+
+local.pred7 <- exp(predict(local.fit7, test_use))
+
+regress.eval(test_use$Market.Value, local.pred7)
+
+test.local7 <- cbind(soc_test, local.pred7)
+test.local7 <- test.local7 %>%
+  select(Player, Overall.Score, Market.Value, local.pred7)
+```
+
+local1 > local7
+
+```{r}
+local.fit8 <- loess(log(Market.Value) ~ Shooting + Ball.Skills + Age + Overall.Score, span = 0.1, data = train_use, degree = 1) 
+
+local.pred8 <- exp(predict(local.fit8, test_use))
+
+regress.eval(test_use$Market.Value, local.pred8)
+
+test.local8 <- cbind(soc_test, local.pred8)
+test.local8 <- test.local8 %>%
+  select(Player, Overall.Score, Market.Value, local.pred8)
+```
+
+local1 > local8
+
+```{r}
+local.fit9 <- loess(log(Market.Value) ~ Shooting + Passing + Age + Overall.Score, span = 0.1, data = train_use, degree = 1) 
+
+local.pred9 <- exp(predict(local.fit9, test_use))
+
+regress.eval(test_use$Market.Value, local.pred9)
+
+test.local9 <- cbind(soc_test, local.pred9)
+test.local9 <- test.local9 %>%
+  select(Player, Overall.Score, Market.Value, local.pred9)
+```
+
+local1 > local9
+
+```{r}
+local.fit10 <- loess(log(Market.Value) ~ Shooting + Defence + Age + Overall.Score, span = 0.1, data = train_use, degree = 1) 
+
+local.pred10 <- exp(predict(local.fit10, test_use))
+
+regress.eval(test_use$Market.Value, local.pred10)
+
+test.local10 <- cbind(soc_test, local.pred10)
+test.local10 <- test.local10 %>%
+  select(Player, Overall.Score, Market.Value, local.pred10)
+```
+
+local1 > local10
+
+```{r}
+local.fit11 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.2, data = train_use, degree = 1) # best with $1000
+
+local.pred11 <- exp(predict(local.fit11, test_use))
+
+regress.eval(test_use$Market.Value, local.pred11)
+
+test.local11 <- cbind(soc_test, local.pred11)
+test.local11 <- test.local11 %>%
+  select(Player, Overall.Score, Market.Value, local.pred11)
+```
+
+local11 > local1
+
+```{r}
+local.fit12 <- loess(log(Market.Value) ~ Shooting + Mental + Age + Overall.Score, span = 0.2, data = train_use, degree = 2)
+
+local.pred12 <- exp(predict(local.fit12, test_use))
+
+regress.eval(test_use$Market.Value, local.pred12)
+
+test.local12 <- cbind(soc_test, local.pred12)
+test.local12 <- test.local12 %>%
+  select(Player, Overall.Score, Market.Value, local.pred12)
+```
+
+local11 > local12
